@@ -1,11 +1,8 @@
-// ==== file: package.json ====
-// language: JSON, target: Node.js 20
 {
   "name": "tg-sms",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
-  "engines": { "node": ">=20.0.0" },
   "scripts": {
     "start": "node index.js"
   },
