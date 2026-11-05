@@ -1,7 +1,8 @@
 // ==== file: index.js ====
 // language: JavaScript, target: Node.js 20
 import express from 'express';
-import { bot, State, Utils, sendAdmin } from './bot.js';
+import { bot, State, sendAdmin } from './bot.js';
+import { Utils } from './utils.js';
 
 const PORT = process.env.PORT || 3000;
 const app = express();
