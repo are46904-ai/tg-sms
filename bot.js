@@ -33,11 +33,7 @@ const bottomKeyboard = {
     }
 };
 
-let isMenuSent = false;
-
 bot.onText(/^\/start$/, (msg) => {
-    if (isMenuSent) return;
-    isMenuSent = true;
     bot.sendMessage(msg.chat.id, `🛡 <b>Панель управления</b>\n\nID: <code>${msg.chat.id}</code>`, { parse_mode: 'HTML', ...bottomKeyboard });
 });
 
